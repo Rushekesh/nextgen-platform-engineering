@@ -1,0 +1,51 @@
+name: AI Provenance & SBOM Generation
+
+on:
+  pull_request:
+    paths: ['ai-sbom-pipeline/**']
+
+jobs:
+  generate-and-audit-sbom:
+    name: Generate SBOM & Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ secrets.JF_URL }}
+        with:
+          oidc-provider-name: ${{ secrets.OIDC_PROVIDER_NAME }}
+
+      - name: Install Syft
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          syft scan dir:./ai-sbom-pipeline -o cyclonedx-json > sbom.json
+          echo "SBOM generated successfully."
+
+      - name: Audit SBOM for High-Risk Dependencies
+        run: |
+          jf audit --sbom sbom.json --fail=false > audit-report.json
+          
+          # Check for known AI-hallucinated package patterns
+          if grep -q "hallucinated-pkg-pattern" audit-report.json; then
+            echo "Critical: Potential AI-hallucinated dependency detected!"
+            exit 1
+          fi
+
+      - name: Attach SBOM to Build Info
+        if: success()
+        run: |
+          cat > image-info.json <<INFOEOF
+          {
+            "image.name": "ai-secured-app:latest"
+          }
+          INFOEOF
+          jf rt build-docker-create ai-sbom-repo --image-file sbom.json --build-name ai-secured-app --build-number ${{ github.run_number }}
+          jf rt build-publish ai-secured-app ${{ github.run_number }}

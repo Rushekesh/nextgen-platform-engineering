@@ -1,0 +1,33 @@
+name: IaC Policy Enforcement
+
+on:
+  pull_request:
+    paths: ['iac-policy-guardian/**']
+
+jobs:
+  opa-eval:
+    name: Evaluate OPA Policies
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Setup OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Convert Terraform to JSON
+        working-directory: iac-policy-guardian
+        run: |
+          terraform init
+          terraform plan -out=tfplan
+          terraform show -json tfplan > tfplan.json
+
+      - name: Evaluate AI Guardrail Policies
+        working-directory: iac-policy-guardian
+        run: |
+          opa eval --fail-defined -i tfplan.json -d policies/ "data.main.deny"
